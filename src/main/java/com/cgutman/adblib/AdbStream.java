@@ -104,6 +104,12 @@ public class AdbStream implements Closeable {
 		}
 	}
 	
+	private boolean queueEmpty = false;
+
+	public boolean isQueueEmpty() {
+		return queueEmpty;
+	}
+
 	/**
 	 * Reads a pending write payload from the other side.
 	 * @return Byte array containing the payload of the write
@@ -112,20 +118,26 @@ public class AdbStream implements Closeable {
 	 */
 	public byte[] read() throws InterruptedException, IOException
 	{
-		byte[] data = null;
+		byte[] data;
 		
 		synchronized (readQueue) {
 			/* Wait for the connection to close or data to be received */
-			while (!isClosed && (data = readQueue.poll()) == null) {
+			while ((data = readQueue.poll()) == null && !isClosed) {
 				readQueue.wait();
 			}
 			
-			if (isClosed) {
+			if (isClosed && queueEmpty) {
 				throw new IOException("Stream closed");
 			}
+
+			if (data != null) {
+				return data;
+			}
+			else {
+				queueEmpty = true;
+				return null;
+			}
 		}
-		
-		return data;
 	}
 	
 	/**
