@@ -27,3 +27,7 @@ android {
 dependencies {
     implementation fileTree(dir: "libs", include: ["*.jar"])
 }
+
+apply plugin: 'com.github.sherter.google-java-format'
+preBuild.dependsOn(verifyGoogleJavaFormat)
+preBuild.mustRunAfter(verifyGoogleJavaFormat)
