@@ -2,6 +2,7 @@ package com.cgutman.adblib;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -40,7 +41,7 @@ public class AdbStream implements Closeable {
   public AdbStream(AdbConnection adbConn, int localId) {
     this.adbConn = adbConn;
     this.localId = localId;
-    this.readQueue = new ConcurrentLinkedQueue<byte[]>();
+    this.readQueue = new ConcurrentLinkedQueue<>();
     this.writeReady = new AtomicBoolean(false);
     this.isClosed = false;
   }
@@ -144,7 +145,7 @@ public class AdbStream implements Closeable {
    */
   public void write(String payload) throws IOException, InterruptedException {
     /* ADB needs null-terminated strings */
-    write(payload.getBytes("UTF-8"), false);
+    write(payload.getBytes(StandardCharsets.UTF_8), false);
     write(new byte[] {0}, true);
   }
 

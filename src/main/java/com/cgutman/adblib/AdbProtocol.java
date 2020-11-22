@@ -2,9 +2,9 @@ package com.cgutman.adblib;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 
 /**
  * This class provides useful functions and fields for ADB protocol details.
@@ -34,10 +34,7 @@ public class AdbProtocol {
   public static byte[] CONNECT_PAYLOAD;
 
   static {
-    try {
-      CONNECT_PAYLOAD = "host::\0".getBytes("UTF-8");
-    } catch (UnsupportedEncodingException e) {
-    }
+    CONNECT_PAYLOAD = "host::\0".getBytes(StandardCharsets.UTF_8);
   }
 
   /**
@@ -98,10 +95,10 @@ public class AdbProtocol {
    */
   public static boolean validateMessage(AdbMessage msg) {
     /* Magic is cmd ^ 0xFFFFFFFF */
-    if (msg.command != (msg.magic ^ 0xFFFFFFFF)) return false;
+    if (msg.command != (~msg.magic)) return false;
 
     if (msg.payloadLength != 0) {
-      if (getPayloadChecksum(msg.payload) != msg.checksum) return false;
+      return getPayloadChecksum(msg.payload) == msg.checksum;
     }
 
     return true;
@@ -148,7 +145,7 @@ public class AdbProtocol {
       message.putInt(0);
     }
 
-    message.putInt(cmd ^ 0xFFFFFFFF);
+    message.putInt(~cmd);
 
     if (payload != null) {
       message.put(payload);
@@ -183,11 +180,10 @@ public class AdbProtocol {
    * @param localId A unique local ID identifying the stream
    * @param dest The destination of the stream on the target
    * @return Byte array containing the message
-   * @throws UnsupportedEncodingException If the destination cannot be encoded to UTF-8
    */
-  public static byte[] generateOpen(int localId, String dest) throws UnsupportedEncodingException {
+  public static byte[] generateOpen(int localId, String dest) {
     ByteBuffer bbuf = ByteBuffer.allocate(dest.length() + 1);
-    bbuf.put(dest.getBytes("UTF-8"));
+    bbuf.put(dest.getBytes(StandardCharsets.UTF_8));
     bbuf.put((byte) 0);
     return generateMessage(CMD_OPEN, localId, 0, bbuf.array());
   }

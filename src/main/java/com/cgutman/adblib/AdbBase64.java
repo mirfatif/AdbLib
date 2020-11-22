@@ -14,5 +14,5 @@ public interface AdbBase64 {
    * @param data Data to encode
    * @return String containing base 64 encoded data
    */
-  public String encodeToString(byte[] data);
+  String encodeToString(byte[] data);
 }
