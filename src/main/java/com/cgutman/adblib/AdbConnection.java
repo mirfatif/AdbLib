@@ -7,7 +7,8 @@ import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
 import java.net.ConnectException;
 import java.net.Socket;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  * This class represents an ADB connection.
@@ -25,38 +26,47 @@ public class AdbConnection implements Closeable {
   private int lastLocalId;
 
   /** The input stream that this class uses to read from the socket. */
-  private InputStream inputStream;
+  private volatile InputStream inputStream;
 
   /** The output stream that this class uses to read from the socket. */
-  OutputStream outputStream;
+  volatile OutputStream outputStream;
 
   /** The backend thread that handles responding to ADB packets. */
-  private Thread connectionThread;
+  private volatile Thread connectionThread;
 
   /** Specifies whether a connect has been attempted */
-  private boolean connectAttempted;
+  private volatile boolean connectAttempted;
+
+  /** Whether the connection thread should give up if the first authentication attempt fails */
+  private volatile boolean abortOnUnauthorised;
+
+  /**
+   * Whether the the first authentication attempt failed and {@link #abortOnUnauthorised} was {@code
+   * true}
+   */
+  private volatile boolean authorisationFailed;
 
   /** Specifies whether a CNXN packet has been received from the peer. */
-  private boolean connected;
+  private volatile boolean connected;
 
   /**
    * Specifies the maximum amount data that can be sent to the remote peer. This is only valid after
    * connect() returns successfully.
    */
-  private int maxData;
+  private volatile int maxData;
 
   /** An initialized ADB crypto object that contains a key pair. */
-  private AdbCrypto crypto;
+  private volatile AdbCrypto crypto;
 
   /** Specifies whether this connection has already sent a signed token. */
   private boolean sentSignature;
 
   /** A hash map of our open streams indexed by local ID. */
-  private HashMap<Integer, AdbStream> openStreams;
+  private volatile ConcurrentHashMap<Integer, AdbStream> openStreams;
 
   /** Internal constructor to initialize some internal state */
   private AdbConnection() {
-    openStreams = new HashMap<Integer, AdbStream>();
+    openStreams = new ConcurrentHashMap<Integer, AdbStream>();
     lastLocalId = 0;
     connectionThread = createConnectionThread();
   }
@@ -147,6 +157,12 @@ public class AdbConnection implements Closeable {
                     if (msg.arg0 == AdbProtocol.AUTH_TYPE_TOKEN) {
                       /* This is an authentication challenge */
                       if (conn.sentSignature) {
+                        if (abortOnUnauthorised) {
+                          authorisationFailed = true;
+                          /* Throwing an exception to break out of the loop */
+                          throw new RuntimeException();
+                        }
+
                         /* We've already tried our signature, so send our public key */
                         packet =
                             AdbProtocol.generateAuth(
@@ -162,8 +178,10 @@ public class AdbConnection implements Closeable {
                       }
 
                       /* Write the AUTH reply */
-                      conn.outputStream.write(packet);
-                      conn.outputStream.flush();
+                      synchronized (conn.outputStream) {
+                        conn.outputStream.write(packet);
+                        conn.outputStream.flush();
+                      }
                     }
                     break;
 
@@ -210,43 +228,54 @@ public class AdbConnection implements Closeable {
   public int getMaxData() throws InterruptedException, IOException {
     if (!connectAttempted) throw new IllegalStateException("connect() must be called first");
 
-    synchronized (this) {
-      /* Block if a connection is pending, but not yet complete */
-      if (!connected) wait();
-
-      if (!connected) {
-        throw new IOException("Connection failed");
-      }
-    }
+    waitForConnection(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
 
     return maxData;
   }
 
   /**
-   * Connects to the remote device. This routine will block until the connection completes.
+   * Same as {@code connect(Long.MAX_VALUE, TimeUnit.MILLISECONDS, false)}
    *
    * @throws IOException If the socket fails while connecting
    * @throws InterruptedException If we are unable to wait for the connection to finish
    */
   public void connect() throws IOException, InterruptedException {
+    connect(Long.MAX_VALUE, TimeUnit.MILLISECONDS, false);
+  }
+
+  /**
+   * Connects to the remote device. This routine will block until the connection completes or the
+   * timeout elapses.
+   *
+   * @param timeout the time to wait for the lock
+   * @param unit the time unit of the timeout argument
+   * @param throwOnUnauthorised Whether to throw an {@link AdbAuthenticationFailedException} if the
+   *     peer rejects out first authentication attempt
+   * @return {@code true} if the connection was established, or {@code false} if the connection
+   *     timed out
+   * @throws IOException If the socket fails while connecting
+   * @throws InterruptedException If we are unable to wait for the connection to finish
+   * @throws AdbAuthenticationFailedException If {@code throwOnUnauthorised} is {@code true} and the
+   *     peer rejects the first authentication attempt, which indicates that the peer has not saved
+   *     our public key from a previous connection
+   */
+  public boolean connect(long timeout, TimeUnit unit, boolean throwOnUnauthorised)
+      throws IOException, InterruptedException, AdbAuthenticationFailedException {
     if (connected) throw new IllegalStateException("Already connected");
 
     /* Write the CONNECT packet */
-    outputStream.write(AdbProtocol.generateConnect());
-    outputStream.flush();
+    synchronized (outputStream) {
+      outputStream.write(AdbProtocol.generateConnect());
+      outputStream.flush();
+    }
 
     /* Start the connection thread to respond to the peer */
     connectAttempted = true;
+    abortOnUnauthorised = throwOnUnauthorised;
+    authorisationFailed = false;
     connectionThread.start();
 
-    /* Wait for the connection to go live */
-    synchronized (this) {
-      if (!connected) wait();
-
-      if (!connected) {
-        throw new IOException("Connection failed");
-      }
-    }
+    return waitForConnection(timeout, unit);
   }
 
   /**
@@ -265,22 +294,17 @@ public class AdbConnection implements Closeable {
 
     if (!connectAttempted) throw new IllegalStateException("connect() must be called first");
 
-    /* Wait for the connect response */
-    synchronized (this) {
-      if (!connected) wait();
-
-      if (!connected) {
-        throw new IOException("Connection failed");
-      }
-    }
+    waitForConnection(Long.MAX_VALUE, TimeUnit.MILLISECONDS);
 
     /* Add this stream to this list of half-open streams */
     AdbStream stream = new AdbStream(this, localId);
     openStreams.put(localId, stream);
 
     /* Send the open */
-    outputStream.write(AdbProtocol.generateOpen(localId, destination));
-    outputStream.flush();
+    synchronized (outputStream) {
+      outputStream.write(AdbProtocol.generateOpen(localId, destination));
+      outputStream.flush();
+    }
 
     /* Wait for the connection thread to receive the OKAY */
     synchronized (stream) {
@@ -293,6 +317,25 @@ public class AdbConnection implements Closeable {
 
     /* We're fully setup now */
     return stream;
+  }
+
+  private boolean waitForConnection(long timeout, TimeUnit unit)
+      throws InterruptedException, IOException {
+    synchronized (this) {
+      /* Block if a connection is pending, but not yet complete */
+      long timeoutEndMillis = System.currentTimeMillis() + unit.toMillis(timeout);
+      while (!connected && connectAttempted && timeoutEndMillis - System.currentTimeMillis() > 0) {
+        wait(timeoutEndMillis - System.currentTimeMillis());
+      }
+
+      if (!connected) {
+        if (connectAttempted) return false;
+        else if (authorisationFailed) throw new AdbAuthenticationFailedException();
+        else throw new IOException("Connection failed");
+      }
+    }
+
+    return true;
   }
 
   /** This function terminates all I/O on streams associated with this ADB connection */
