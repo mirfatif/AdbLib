@@ -2,7 +2,7 @@ apply plugin: 'com.android.library'
 
 android {
     compileSdkVersion 29
-    buildToolsVersion "30.0.2"
+    buildToolsVersion "30.0.3"
 
     defaultConfig {
         minSdkVersion 24
@@ -24,10 +24,5 @@ android {
     }
 }
 
-dependencies {
-    implementation fileTree(dir: "libs", include: ["*.jar"])
-}
-
 apply plugin: 'com.github.sherter.google-java-format'
 preBuild.dependsOn(verifyGoogleJavaFormat)
-preBuild.mustRunAfter(verifyGoogleJavaFormat)
