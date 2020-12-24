@@ -186,6 +186,10 @@ public class AdbStream implements Closeable {
     }
   }
 
+  public void flush() throws IOException {
+    adbConn.outputStream.flush();
+  }
+
   /**
    * Closes the stream. This sends a close message to the peer.
    *
